@@ -1,161 +1,156 @@
+import os
 import streamlit as st
 import tensorflow as tf
 import numpy as np
-import cv2
 from PIL import Image
 
+# -----------------------------
+# Page Configuration
+# -----------------------------
 st.set_page_config(
-    page_title="Chest X-Ray AI",
+    page_title="Chest X-Ray AI Assistant",
     page_icon="🩺",
     layout="centered"
 )
 
-st.title("🩺 Chest X-Ray AI")
-st.write("Upload a chest X-ray image to predict NORMAL or PNEUMONIA.")
-
-st.warning(
-    "This is an AI research prototype and not a medical diagnosis. "
-    "Please consult a qualified medical professional."
+# -----------------------------
+# App Title
+# -----------------------------
+st.title("🩺 Chest X-Ray AI Assistant")
+st.write(
+    "Upload a chest X-ray image for an AI-based prediction."
 )
 
-# Load model
+st.warning(
+    "⚠️ This application is for educational purposes only. "
+    "It is not a medical diagnosis."
+)
+
+# -----------------------------
+# Find Model File
+# -----------------------------
+MODEL_FILES = [
+    "model.keras",
+    "chest_xray_model.keras",
+    "pneumonia_model.keras",
+    "best_model.keras",
+    "model.h5",
+    "chest_xray_model.h5",
+    "pneumonia_model.h5",
+    "best_model.h5"
+]
+
+def find_model_file():
+    for file_name in MODEL_FILES:
+        if os.path.exists(file_name):
+            return file_name
+    return None
+
+MODEL_PATH = find_model_file()
+
+# -----------------------------
+# Load Model
+# -----------------------------
 @st.cache_resource
-def load_model():
-    return tf.keras.models.load_model(
-        "chest_xray_mobilenet_model.keras"
+def load_model(model_path):
+    return tf.keras.models.load_model(model_path)
+
+# -----------------------------
+# Check Model
+# -----------------------------
+if MODEL_PATH is None:
+    st.error("❌ Model file not found!")
+
+    st.info(
+        "Please upload your trained model file "
+        "(.keras or .h5) to the GitHub repository."
     )
 
-model = load_model()
-
-# Find MobileNetV2 base model
-base_model = None
-
-for layer in model.layers:
-    if isinstance(layer, tf.keras.Model):
-        base_model = layer
-        break
-
-# Find last convolutional layer
-last_conv_layer = None
-
-for layer in reversed(base_model.layers):
-    if isinstance(layer, tf.keras.layers.Conv2D):
-        last_conv_layer = layer
-        break
-
-
-def generate_gradcam(image_array):
-
-    processed_image = image_array / 127.5 - 1.0
-
-    grad_model = tf.keras.models.Model(
-        inputs=base_model.input,
-        outputs=[
-            last_conv_layer.output,
-            base_model.output
-        ]
+    st.write("Expected model file names:")
+    st.code(
+        "model.keras\n"
+        "chest_xray_model.keras\n"
+        "pneumonia_model.keras\n"
+        "best_model.keras\n"
+        "model.h5"
     )
 
-    with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(processed_image)
-        loss = predictions[:, 0]
+    st.stop()
 
-    gradients = tape.gradient(loss, conv_outputs)
+try:
+    model = load_model(MODEL_PATH)
+    st.success(f"✅ Model loaded successfully: {MODEL_PATH}")
+except Exception as error:
+    st.error("❌ Error while loading the model.")
+    st.code(str(error))
+    st.stop()
 
-    pooled_gradients = tf.reduce_mean(
-        gradients,
-        axis=(0, 1, 2)
-    )
+# -----------------------------
+# Image Preprocessing
+# -----------------------------
+def preprocess_image(image):
+    image = image.convert("RGB")
+    image = image.resize((224, 224))
 
-    conv_outputs = conv_outputs[0]
+    image_array = np.array(image)
+    image_array = image_array / 255.0
+    image_array = np.expand_dims(image_array, axis=0)
 
-    heatmap = conv_outputs @ pooled_gradients[..., tf.newaxis]
-    heatmap = tf.squeeze(heatmap)
+    return image_array
 
-    heatmap = tf.maximum(heatmap, 0)
-    heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
-    heatmap = heatmap.numpy()
-
-    original = np.uint8(image_array[0])
-
-    original = cv2.cvtColor(
-        original,
-        cv2.COLOR_RGB2BGR
-    )
-
-    heatmap = cv2.resize(
-        heatmap,
-        (224, 224)
-    )
-
-    heatmap_uint8 = np.uint8(255 * heatmap)
-
-    heatmap_color = cv2.applyColorMap(
-        heatmap_uint8,
-        cv2.COLORMAP_JET
-    )
-
-    result = cv2.addWeighted(
-        original,
-        0.6,
-        heatmap_color,
-        0.4,
-        0
-    )
-
-    result = cv2.cvtColor(
-        result,
-        cv2.COLOR_BGR2RGB
-    )
-
-    return result
-
-
+# -----------------------------
+# Upload Image
+# -----------------------------
 uploaded_file = st.file_uploader(
     "Upload Chest X-Ray Image",
     type=["jpg", "jpeg", "png"]
 )
 
+# -----------------------------
+# Prediction
+# -----------------------------
 if uploaded_file is not None:
-
-    image = Image.open(uploaded_file).convert("RGB")
-    image = image.resize((224, 224))
-
-    image_array = np.array(image)
-    input_array = np.expand_dims(image_array, axis=0)
+    image = Image.open(uploaded_file)
 
     st.subheader("Uploaded X-Ray")
-    st.image(image, width="stretch")
-
-    # Prediction
-    processed_image = input_array / 127.5 - 1.0
-    prediction = model.predict(processed_image, verbose=0)[0][0]
-
-    if prediction >= 0.5:
-        result = "PNEUMONIA"
-        confidence = prediction * 100
-    else:
-        result = "NORMAL"
-        confidence = (1 - prediction) * 100
-
-    st.subheader("Prediction Result")
-
-    if result == "PNEUMONIA":
-        st.error(f"Prediction: {result}")
-    else:
-        st.success(f"Prediction: {result}")
-
-    st.write(f"Confidence: {confidence:.2f}%")
-
-    # Grad-CAM
-    st.subheader("Grad-CAM Explainability")
-    st.caption(
-        "Highlighted regions show areas that influenced the model's prediction."
-    )
-
-    gradcam_image = generate_gradcam(input_array)
     st.image(
-        gradcam_image,
-        caption="Grad-CAM Heatmap",
-        width="stretch"
+        image,
+        caption="Chest X-Ray Image",
+        use_container_width=True
     )
+
+    if st.button("🔍 Predict"):
+        with st.spinner("Analyzing image..."):
+            processed_image = preprocess_image(image)
+            prediction = model.predict(processed_image)
+
+        st.subheader("Prediction Result")
+
+        # Binary classification
+        if prediction.shape[-1] == 1:
+            probability = float(prediction[0][0])
+
+            if probability >= 0.5:
+                result = "Pneumonia"
+                confidence = probability * 100
+            else:
+                result = "Normal"
+                confidence = (1 - probability) * 100
+
+        # Two-class classification
+        else:
+            predicted_class = int(np.argmax(prediction[0]))
+            confidence = float(np.max(prediction[0])) * 100
+
+            class_names = {
+                0: "Normal",
+                1: "Pneumonia"
+            }
+
+            result = class_names.get(
+                predicted_class,
+                f"Class {predicted_class}"
+            )
+
+        st.success(f"Prediction: {result}")
+        st.info(f"Confidence: {confidence:.2f}%")
